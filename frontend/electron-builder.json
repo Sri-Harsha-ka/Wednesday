@@ -1,0 +1,16 @@
+{
+  "appId": "com.promptPirrets.Wednesday",
+  "files": ["dist-react", "src/electron/**"],
+  "extraResources": ["src/assets/**"],
+  "icon": "./desktopIcon.ico",
+  "mac": {
+    "target": "dmg"
+  },
+  "linux": {
+    "target": "AppImage",
+    "category": "Utility"
+  },
+  "win": {
+    "target": ["portable", "msi"]
+  }
+}
