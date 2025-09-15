@@ -1,5 +1,5 @@
 // src/components/Voice.jsx
-import React, { useRef, useState, useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 export default function Voice() {
   const [listening, setListening] = useState(false);
@@ -8,167 +8,75 @@ export default function Voice() {
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
-  const manualStopRef = useRef(false);
-  const restartingRef = useRef(false);
-  const audioCtxRef = useRef(null);
-  const analyserRef = useRef(null);
-  const dataArrayRef = useRef(null);
 
   useEffect(() => {
     return () => {
+      // cleanup
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch (e) {}
+        mediaRecorderRef.current.stop();
       }
-      if (audioCtxRef.current) audioCtxRef.current.close();
     };
   }, []);
 
-  const speakText = (text) => {
-    return new Promise((resolve) => {
-      try {
-        const utt = new SpeechSynthesisUtterance(text);
-        utt.onend = () => resolve();
-        utt.onerror = () => resolve();
-        speechSynthesis.speak(utt);
-      } catch (e) {
-        resolve();
-      }
-    });
-  };
-
-  const detectSilence = (stream, onSilence, threshold = 3, timeout = 1000) => {
-    const audioCtx = new AudioContext();
-    audioCtxRef.current = audioCtx;
-    const source = audioCtx.createMediaStreamSource(stream);
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 2048;
-    source.connect(analyser);
-    analyserRef.current = analyser;
-    const dataArray = new Uint8Array(analyser.fftSize);
-    dataArrayRef.current = dataArray;
-
-    let silenceStart = null;
-    const check = () => {
-      analyser.getByteTimeDomainData(dataArray);
-      const rms = Math.sqrt(dataArray.reduce((sum, v) => sum + (v - 128) ** 2, 0) / dataArray.length);
-
-      if (rms < threshold) {
-        if (!silenceStart) silenceStart = Date.now();
-        else if (Date.now() - silenceStart > timeout) {
-          onSilence();
-          return;
-        }
-      } else {
-        silenceStart = null;
-      }
-      requestAnimationFrame(check);
-    };
-    check();
+  const sendToBackend = async (uint8arr) => {
+    try {
+      const resp = await window.electronAPI.transcribeAudio(uint8arr);
+      console.log("Main response:", resp);
+      if (resp?.error) setError(resp.error);
+      else setLastText(resp?.text || resp?.question || "");
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   const startRecording = async () => {
     setError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 48000,
-          channelCount: 1,
-          noiseSuppression: true,
-          echoCancellation: true,
-        },
-      });
-
-      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
-
-      const mr = new MediaRecorder(stream, { mimeType: mime });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       chunksRef.current = [];
+      const options = { mimeType: "audio/webm" };
+      const mr = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mr;
 
-      mr.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      mr.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) chunksRef.current.push(ev.data);
       };
 
       mr.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        if (audioCtxRef.current) audioCtxRef.current.close();
-
-        const blob = new Blob(chunksRef.current, { type: mime });
-        const arrayBuffer = await blob.arrayBuffer();
-        const uint8 = new Uint8Array(arrayBuffer);
-
         try {
-          const result = await window.electronAPI.transcribeAudio(uint8);
-          let reply = "";
-
-          if (result?.error) {
-            reply = result.error || "Error occurred";
-          } else if (!result?.text || result.text.trim() === "") {
-            reply = "I didn't hear anything!";
-          }else {
-            reply = result.text;
+          const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+          const size = blob.size;
+          console.log("Recorded blob size:", size);
+          if (!size || size < 100) {
+            setError("Recorded audio too small. Try speaking louder or record longer.");
+            return;
           }
-
-          setLastText(reply);
-          await speakText(reply);
-
-          if (!manualStopRef.current) {
-            if (!restartingRef.current) {
-              restartingRef.current = true;
-              setTimeout(() => (restartingRef.current = false), 300);
-              startRecording();
-            }
-          } else {
-            setListening(false);
-          }
-        } catch (ipcErr) {
-          const msg = "I couldn't process the audio!";
-          setError(String(ipcErr));
-          setLastText(msg);
-          await speakText(msg);
-          setListening(false);
+          const arrayBuffer = await blob.arrayBuffer();
+          const uint8 = new Uint8Array(arrayBuffer);
+          // send Uint8Array to preload -> main
+          await sendToBackend(uint8);
+        } catch (e) {
+          setError(String(e));
         }
       };
 
-      mediaRecorderRef.current = mr;
       mr.start();
       setListening(true);
-
-      // improved silence detection: longer timeout and better threshold
-      detectSilence(stream, () => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-          mediaRecorderRef.current.stop();
-        }
-      }, 2, 5000); // listens for up to 5 seconds of silence
-
     } catch (err) {
-      const msg = "Microphone access denied or unavailable";
-      setError(msg);
-      setLastText(msg);
-      await speakText(msg);
-      setListening(false);
+      setError(String(err));
     }
   };
 
   const stopRecording = () => {
-    manualStopRef.current = true;
-    try {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        mediaRecorderRef.current.stop();
-      }
-    } catch (e) {
-      console.warn("stop error:", e);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+      setListening(false);
     }
   };
 
   const toggle = () => {
     if (listening) stopRecording();
-    else {
-      manualStopRef.current = false;
-      startRecording();
-    }
+    else startRecording();
   };
 
   return (
