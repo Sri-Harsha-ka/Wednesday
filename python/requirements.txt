@@ -1,0 +1,8 @@
+flask
+flask-cors
+requests
+whisper
+faster-whisper
+sentencepiece
+torch
+pyautogui
