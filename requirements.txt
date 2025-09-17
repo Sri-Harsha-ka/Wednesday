@@ -1,0 +1,7 @@
+torch 
+flask
+flask-cors
+faster-whisper
+pyautogui
+openai-whisper
+requests
