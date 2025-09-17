@@ -1,3 +1,83 @@
+
+from flask import Flask, request, jsonify
+import subprocess
+import os
+
+app = Flask(__name__)
+
+APP_COMMANDS = {
+    # System utilities (these usually work as-is)
+    "notepad": "notepad.exe",
+    "calculator": "calc.exe",
+    "paint": "mspaint.exe",
+    "command prompt": "cmd.exe",
+    "cmd": "cmd.exe",
+    "explorer": "explorer.exe",
+    "snipping tool": "SnippingTool.exe",
+    "task manager": "taskmgr.exe",
+
+    # Browsers
+    "chrome": r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "google chrome": r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "edge": r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "microsoft edge": r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+
+    # Editors
+    "vs code": r"C:\\Users\\vinee\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+    "visual studio code": r"C:\\Users\\vineee\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+    "sublime text": r"C:\\Program Files\\Sublime Text\\sublime_text.exe",
+    "notepad++": r"C:\\Program Files\\Notepad++\\notepad++.exe",
+
+    # Microsoft Office (if installed)
+    "word": r"C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+    "excel": r"C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
+    "powerpoint": r"C:\\Program Files\\Microsoft Office\\root\\Office16\\POWERPNT.EXE",
+
+    # Media
+    "vlc": r"C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+    "windows media player": r"C:\\Program Files\\Windows Media Player\\wmplayer.exe",
+    "spotify": r"C:\\Users\\vinee\\AppData\\Roaming\\Spotify\\Spotify.exe",
+}
+
+
+@app.route('/open_app', methods=['POST'])
+def open_app():
+    import sys
+    import getpass
+    import socket
+    logging.info("[open_app] --- New request ---")
+    try:
+        data = request.get_json(force=True, silent=True)
+        logging.info(f"[open_app] Raw data: {data}")
+        if not data or 'app_name' not in data:
+            logging.error("[open_app] No app_name in request data")
+            return jsonify({"status": "error", "message": "Missing app_name in request"}), 400
+        app_name = data.get('app_name', '').lower()
+        command = APP_COMMANDS.get(app_name)
+        logging.info(f"[open_app] app_name: '{app_name}' -> command: {command}")
+        logging.info(f"[open_app] User: {getpass.getuser()}, Platform: {sys.platform}, Host: {socket.gethostname()}")
+        logging.info(f"[open_app] CWD: {os.getcwd()}, ENV: {os.environ.get('VIRTUAL_ENV', 'None')}")
+        if command:
+            try:
+                if command.endswith('.exe'):
+                    logging.info(f"[open_app] Using os.startfile to open: {command}")
+                    os.startfile(command)
+                else:
+                    logging.info(f"[open_app] Using subprocess.Popen to open: {command}")
+                    subprocess.Popen(command, shell=True)
+                logging.info(f"[open_app] Successfully opened: {app_name}")
+                return jsonify({"status": "success", "message": f"Opened {app_name}"})
+            except Exception as e:
+                logging.exception(f"[open_app] Error opening {app_name}")
+                return jsonify({"status": "error", "message": str(e)}), 500
+        else:
+            logging.error(f"[open_app] App not found: {app_name}")
+            return jsonify({"status": "error", "message": "App not found"}), 404
+    except Exception as exc:
+        logging.exception("[open_app] Fatal error in handler")
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+# ...existing code...
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
@@ -33,7 +113,8 @@ CORS(app)
 # Configuration
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "tiny")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama2")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+
 
 # Device / executor setup for faster transcription
 try:
@@ -51,6 +132,21 @@ try:
 except Exception:
     logging.exception("Failed to load model with device hint; falling back to default load")
     model = whisper.load_model(MODEL_NAME)
+
+# --- Helper: Convert webm to wav for Whisper compatibility ---
+def convert_webm_to_wav(webm_path):
+    """Convert a .webm file to .wav using ffmpeg. Returns wav path or None on failure."""
+    wav_path = webm_path.replace('.webm', '.wav')
+    cmd = [
+        'ffmpeg', '-y', '-i', webm_path,
+        '-ar', '16000', '-ac', '1', wav_path
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return wav_path
+    except Exception as e:
+        logging.error(f"ffmpeg conversion failed: {e}")
+        return None
 
 # faster-whisper: lazy-loaded model holder
 _fw_model = None
@@ -141,6 +237,9 @@ def ask_ollama(question: str) -> str:
 
     try:
         res = requests.post(url, json=payload, timeout=60)
+        if res.status_code == 404:
+            logging.error("Ollama API returned 404 Not Found. Ollama server may not be running or the endpoint is incorrect.")
+            return "[Ollama not available: 404 Not Found]"
         res.raise_for_status()
 
         # First try: parse as JSON (most common)
@@ -248,103 +347,10 @@ def ask_ollama(question: str) -> str:
 
     except Exception as e:
         logging.exception("Ollama request failed")
-        return f"Ollama error: {e}"
+        return "[Ollama error: {}]".format(e)
 
 
-# ------------------ Voice command helpers (from server_voice.py) ------------------
-APP_MAP = {
-    "Windows": {
-        "chrome": r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "notepad": "notepad.exe",
-        "calculator": "calc.exe",
-    },
-    "Darwin": {
-        "chrome": "Google Chrome",
-        "vscode": "Visual Studio Code",
-    },
-    "Linux": {
-        "chrome": "google-chrome",
-        "vscode": "code",
-    },
-}
 
-
-def system_name():
-    return platform.system()
-
-
-def open_url(url: str):
-    if not re.match(r"https?://", url):
-        url = "https://" + url
-    webbrowser.open(url)
-    return True, f"Opened {url}"
-
-
-def open_application(name: str):
-    sysname = system_name()
-    mapping = APP_MAP.get(sysname, {})
-    name = name.strip().lower()
-
-    if name in mapping:
-        path = os.path.expandvars(mapping[name])
-        try:
-            subprocess.Popen([path])
-            return True, f"Opening {name}"
-        except Exception as e:
-            return False, str(e)
-
-    return False, f"App {name} not found"
-
-
-def take_screenshot():
-    if pyautogui is None:
-        return False, "Screenshot feature not available"
-    try:
-        img = pyautogui.screenshot()
-        fname = f"screenshot_{int(time.time())}.png"
-        img.save(fname)
-        return True, f"Screenshot saved to {fname}"
-    except Exception as e:
-        return False, str(e)
-
-
-def parse_and_execute(text: str):
-    text = (text or "").lower().strip()
-
-    if "screenshot" in text:
-        return take_screenshot()
-
-    if text.startswith("open "):
-        target = text.replace("open ", "").strip()
-
-        # Websites
-        if "youtube" in target:
-            return open_url("https://youtube.com")
-        if "google" in target:
-            return open_url("https://google.com")
-
-        # Direct URL
-        if "." in target:
-            return open_url(target)
-
-        # Apps
-        return open_application(target)
-
-    return False, "Command not recognized"
-
-# Flask endpoint for voice command execution (merged from server_voice.py)
-@app.route("/api/execute", methods=["POST"])
-def execute_command():
-    try:
-        data = request.get_json(force=False, silent=True) or {}
-        text = data.get("text") or data.get("command") or ""
-        ok, msg = parse_and_execute(text)
-        return jsonify({"ok": ok, "message": msg})
-    except Exception as e:
-        logging.exception("execute_command error")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-# ------------------ End voice helpers ------------------
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -379,26 +385,27 @@ def transcribe():
         if size < 50:
             logging.warning("Uploaded file too small to contain speech")
             return jsonify({"error": "uploaded file is too small or empty"}), 400
-        logging.info("Starting transcription (faster-whisper preferred)")
-        transcript = transcribe_audio(tmp_path)
+
+        # --- Convert webm to wav for Whisper compatibility ---
+        wav_path = convert_webm_to_wav(tmp_path)
+        if wav_path and os.path.exists(wav_path):
+            logging.info(f"Converted {tmp_path} to {wav_path} for transcription")
+            transcript = transcribe_audio(wav_path)
+        else:
+            logging.info("ffmpeg conversion failed or wav not found; using original webm")
+            transcript = transcribe_audio(tmp_path)
         logging.info(f"Transcript: {transcript!r}")
 
         if not transcript:
             return jsonify({"error": "no speech detected"}), 400
 
-        # Check if transcript looks like a local command (e.g., "open youtube")
-        try:
-            cmd_ok, cmd_msg = parse_and_execute(transcript)
-        except Exception:
-            cmd_ok, cmd_msg = False, "Command parsing failed"
-
-        # If parse_and_execute recognized the command, return its result immediately
-        if cmd_ok or (isinstance(cmd_msg, str) and cmd_msg != "Command not recognized"):
-            logging.info(f"Executed command from transcript: ok={cmd_ok} msg={cmd_msg}")
-            return jsonify({"text": str(cmd_msg), "question": transcript, "command_executed": True}), 200
-
-        # Otherwise fall back to LLM processing
+        # If you want to support direct app opening from transcript, call /open_app from frontend after transcription.
+        # Otherwise, just return the transcript and let the frontend handle app opening.
         answer = ask_ollama(transcript)
+        # If Ollama is not available, return a clean message only
+        if answer.startswith('[Ollama not available:') or answer.startswith('[Ollama error:'):
+            logging.info(f"Ollama unavailable: {answer}")
+            return jsonify({"text": answer, "question": transcript}), 200
         logging.info(f"Ollama answer: {answer!r}")
         return jsonify({"text": answer, "question": transcript}), 200
     except Exception as exc:
@@ -408,9 +415,20 @@ def transcribe():
         try:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+            # Clean up wav file if created
+            wav_path = tmp_path.replace('.webm', '.wav')
+            if os.path.exists(wav_path):
+                os.unlink(wav_path)
         except Exception:
-            logging.exception("failed to delete tmp file")
+            logging.exception("failed to delete tmp/wav file")
 
+
+
+# 404 error handler must be after app is defined and all routes
+@app.errorhandler(404)
+def handle_404(e):
+    logging.error(f"404 Not Found: {request.path} method={request.method} data={request.get_data(as_text=True)}")
+    return jsonify({"status": "error", "message": f"Not found: {request.path}"}), 404
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
