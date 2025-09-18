@@ -606,36 +606,40 @@ export default function Voice() {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gray-50 space-y-6">
+    <div className="flex flex-col items-center justify-center h-screen bg-black space-y-6 relative overflow-hidden">
+      {/* Glassmorphism background effect */}
+      <div className="absolute inset-0 z-0 pointer-events-none" style={{background: "radial-gradient(ellipse at 60% 20%, rgba(6,182,212,0.10) 0%, transparent 70%), radial-gradient(ellipse at 20% 80%, rgba(139,92,246,0.10) 0%, transparent 70%)"}}></div>
       <div
         onClick={handleClick}
         role="button"
         aria-pressed={listening}
-        className={`relative flex items-center justify-center w-64 h-64 rounded-full cursor-pointer transition duration-300`}
+        className={`relative flex items-center justify-center w-64 h-64 rounded-full cursor-pointer transition-all duration-300 shadow-cyan-400/30 shadow-lg border-4 border-cyan-800 hover:shadow-cyan-400/60 hover:scale-105 z-10`}
         style={{
           background: listening 
-            ? "linear-gradient(135deg,#3b82f6,#06b6d4)" 
+            ? "linear-gradient(135deg,#06b6d4 60%,#0ea5e9 100%)" 
             : speaking 
-            ? "linear-gradient(135deg,#10b981,#059669)"
-            : "white",
+            ? "linear-gradient(135deg,#0ea5e9 60%,#6366f1 100%)"
+            : "linear-gradient(135deg,#0f172a 60%,#164e63 100%)",
           boxShadow: listening 
-            ? "0 0 35px rgba(59,130,246,0.7)" 
+            ? "0 0 60px 10px rgba(6,182,212,0.5)"
             : speaking 
-            ? "0 0 35px rgba(16,185,129,0.7)"
-            : "0 4px 12px rgba(0,0,0,0.12)",
+            ? "0 0 60px 10px rgba(99,102,241,0.4)"
+            : "0 4px 24px 0 rgba(6,182,212,0.15)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)"
         }}
       >
         <span className="text-4xl z-10">
           {listening ? "🎙️" : speaking ? "🔊" : "🎤"}
         </span>
-        {listening && <span className="absolute inset-0 rounded-full border-4 border-blue-400 animate-ping z-0"></span>}
-        {speaking && <span className="absolute inset-0 rounded-full border-4 border-green-400 animate-pulse z-0"></span>}
+        {listening && <span className="absolute inset-0 rounded-full border-4 border-cyan-400 animate-ping z-0"></span>}
+        {speaking && <span className="absolute inset-0 rounded-full border-4 border-cyan-500 animate-pulse z-0"></span>}
       </div>
 
       <div className="text-center max-w-4xl">
-        {error && <div className="text-sm text-red-600 mb-3 p-3 bg-red-50 rounded-lg border border-red-200">{error}</div>}
+        {error && <div className="text-sm text-red-400 mb-3 p-3 bg-red-950/50 rounded-lg border border-red-800">{error}</div>}
         
-        <div className="text-sm text-gray-600 mb-3">
+        <div className="text-sm text-cyan-400 mb-3">
           {listening ? 
             "🎤 Listening... Speak clearly with complete phrases (double-click to cancel)" : 
             speaking ? 
@@ -645,7 +649,7 @@ export default function Voice() {
         </div>
         
         {!listening && !speaking && (
-          <div className="text-xs text-gray-500 mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+          <div className="text-xs text-cyan-300 mb-4 p-4 bg-cyan-950/30 rounded-lg border border-cyan-800">
             <strong>💡 Voice Command Tips:</strong><br/>
             • Use complete phrases: <em>"Can you open calculator"</em><br/>
             • Be specific: <em>"Please start notepad"</em><br/>
@@ -655,7 +659,7 @@ export default function Voice() {
         )}
         
         {lastText && (
-          <div className="text-lg font-medium text-gray-700 p-4 bg-white rounded-lg shadow-md border-l-4 border-blue-500">
+          <div className="text-lg font-medium text-cyan-100 p-4 bg-cyan-950/40 rounded-lg shadow-md border-l-4 border-cyan-500">
             {lastText}
           </div>
         )}

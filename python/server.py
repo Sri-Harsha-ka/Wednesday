@@ -138,8 +138,12 @@ def ask_gemini(question: str) -> str:
             {"parts": [{"text": question}]}
         ]
     }
+    import time
     try:
-        res = requests.post(GEMINI_API_URL, headers=headers, params=params, json=payload, timeout=60)
+        start = time.time()
+        res = requests.post(GEMINI_API_URL, headers=headers, params=params, json=payload, timeout=12)
+        elapsed = time.time() - start
+        logging.info(f"Gemini API call took {elapsed:.2f} seconds")
         res.raise_for_status()
         data = res.json()
         # Gemini returns candidates[0].content.parts[0].text
@@ -185,8 +189,10 @@ def transcribe_audio(audio_path: str) -> str:
     
     logging.info(f"Attempting transcription of {audio_path} (size: {os.path.getsize(audio_path)} bytes)")
     
+    import time
     try:
         logging.info("Attempting whisper transcription with enhanced options")
+        start = time.time()
         res = model.transcribe(
             audio_path,
             language="en",  # Force English for better accuracy
@@ -200,6 +206,8 @@ def transcribe_audio(audio_path: str) -> str:
             logprob_threshold=-1.0,  # Confidence threshold
             no_speech_threshold=0.6,  # Higher threshold for no speech detection
         )
+        elapsed = time.time() - start
+        logging.info(f"Whisper transcription took {elapsed:.2f} seconds")
         text = res.get("text", "").strip()
         # Additional quality checks for noisy environments
         if text:

@@ -2,7 +2,7 @@ import { Outlet, NavLink } from "react-router-dom";
 
 function TaskManager() {
   return (
-    <div className="h-full w-full flex flex-col">
+  <div className="h-full w-full flex flex-col bg-black">
       {/* Top navigation for TaskManager subsections */}
       <nav className="flex gap-4 p-4 border-b shadow">
         <NavLink 

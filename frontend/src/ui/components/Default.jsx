@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react'
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 
 const Default = () => {
     const canvasRef = useRef(null);
@@ -363,6 +363,16 @@ const Default = () => {
     const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
     const randomResponse = responses[Math.floor(Math.random() * responses.length)];
 
+    // Animation and navigation for chat link
+    const [animate, setAnimate] = useState(false);
+    const navigate = useNavigate();
+    const handleChatClick = () => {
+        setAnimate(true);
+        setTimeout(() => {
+            navigate('/?openChat=true', { replace: true });
+        }, 700); // Animation duration
+    };
+
     return (
         <div className="relative h-full w-full bg-black overflow-hidden">
             {/* Canvas Particles Background */}
@@ -376,17 +386,24 @@ const Default = () => {
                 <div className="text-center">
                     <p className='text-4xl text-white mb-4'>{randomGreeting}</p>
                     <div className='pt-6'>
-                        <Link to="/app/Chat">
-                            <p className='text-blue-400 hover:text-blue-300 transition-colors duration-200 cursor-pointer'>
-                                {randomResponse}
-                            </p>
-                        </Link>
+                        <span
+                            className={`text-blue-400 hover:text-blue-300 transition-colors duration-200 cursor-pointer inline-block font-bold text-3xl transition-transform duration-700 ${animate ? 'translate-y-4 scale-125 shadow-2xl' : ''}`}
+                            onClick={handleChatClick}
+                            title="Go to Chat"
+                        >
+                            {randomResponse}
+                        </span>
                     </div>
                     <div className="mt-4 text-xs text-gray-400">
                         Interactive Particles - Hover & Click!
                     </div>
                 </div>
             </div>
+            <style>{`
+                .translate-y-4 {
+                  transform: translateY(1rem) scale(1.25);
+                }
+            `}</style>
         </div>
     )
 }
