@@ -116,11 +116,19 @@ except Exception:
 def convert_webm_to_wav(webm_path):
     """Convert a .webm file to .wav using ffmpeg. Returns wav path or None on failure."""
     wav_path = webm_path.replace('.webm', '.wav')
+    # Enhanced ffmpeg command with noise reduction and audio enhancement
     cmd = [
         'ffmpeg', '-y', '-i', webm_path,
-        '-ar', '16000', '-ac', '1', 
-        '-acodec', 'pcm_s16le',  # Ensure PCM encoding
-        '-f', 'wav',  # Force WAV format
+        # Audio preprocessing for better speech recognition
+        '-af', 'highpass=f=200,lowpass=f=3000,volume=1.5,dynaudnorm=f=75:g=25:p=0.95',
+        # highpass=200Hz removes low-frequency noise
+        # lowpass=3000Hz removes high-frequency noise (speech is typically 300-3400Hz)
+        # volume=1.5 increases gain
+        # dynaudnorm normalizes audio levels
+        '-ar', '16000',  # 16kHz sample rate optimal for speech
+        '-ac', '1',      # Mono channel
+        '-acodec', 'pcm_s16le',  # 16-bit PCM encoding
+        '-f', 'wav',     # WAV format
         wav_path
     ]
     try:
@@ -214,21 +222,67 @@ def get_faster_whisper_model():
 
 
 def transcribe_with_faster_whisper(audio_path: str, beam_size: int = 1) -> str:
-    """Transcribe using faster-whisper if available. Returns the transcript string."""
+    """Transcribe using faster-whisper with enhanced noise handling."""
     model_fw = get_faster_whisper_model()
     if model_fw is None:
         raise RuntimeError("faster-whisper not available")
 
-    segments, info = model_fw.transcribe(audio_path, beam_size=beam_size)
+    # Enhanced transcription with noise handling options
+    segments, info = model_fw.transcribe(
+        audio_path, 
+        beam_size=beam_size,
+        language="en",  # Force English for consistency
+        condition_on_previous_text=False,  # Don't use previous context
+        temperature=0.0,  # More deterministic output
+        compression_ratio_threshold=2.4,
+        log_prob_threshold=-1.0,
+        no_speech_threshold=0.6,
+        initial_prompt="Please transcribe clearly spoken English voice commands."
+    )
+    
     parts = []
+    total_confidence = 0.0
+    segment_count = 0
+    
     for seg in segments:
         # seg may be an object with .text or a tuple/list
         try:
-            parts.append(seg.text)
+            text = seg.text.strip()
+            if text:
+                parts.append(text)
+                # Track confidence if available
+                if hasattr(seg, 'avg_logprob'):
+                    total_confidence += seg.avg_logprob
+                    segment_count += 1
         except Exception:
             if isinstance(seg, (list, tuple)) and len(seg) > 0:
-                parts.append(str(seg[0]))
-    return " ".join(p.strip() for p in parts if p)
+                text = str(seg[0]).strip()
+                if text:
+                    parts.append(text)
+    
+    full_text = " ".join(parts)
+    
+    # Quality checks for noisy environments
+    if full_text:
+        words = full_text.lower().split()
+        
+        # Check minimum length
+        if len(words) < 2 and len(full_text) < 5:
+            logging.warning(f"faster-whisper transcript too short: '{full_text}'")
+            return ""
+        
+        # Check for repetitive patterns (common with noise)
+        if len(words) > 2:
+            unique_words = len(set(words))
+            repetition_ratio = unique_words / len(words)
+            if repetition_ratio < 0.3:
+                logging.warning(f"faster-whisper high repetition: {repetition_ratio:.2f}")
+                return ""
+        
+        avg_confidence = total_confidence / segment_count if segment_count > 0 else 0.0
+        logging.info(f"faster-whisper quality: '{full_text}' (conf: {avg_confidence:.3f})")
+    
+    return full_text
 
 
 def transcribe_audio(audio_path: str) -> str:
@@ -258,22 +312,60 @@ def transcribe_audio(audio_path: str) -> str:
 
     # Fallback: use the whisper package already loaded as `model`
     try:
-        logging.info("Attempting regular whisper transcription")
-        # Add some whisper options that might help with audio quality
+        logging.info("Attempting regular whisper transcription with enhanced options")
+        # Enhanced whisper options for better noise handling
         res = model.transcribe(
             audio_path,
-            language=None,  # Auto-detect language
+            language="en",  # Force English for better accuracy
             task="transcribe",
             verbose=False,
-            word_timestamps=False
+            word_timestamps=True,  # Enable to get confidence info
+            # Audio preprocessing options
+            condition_on_previous_text=False,  # Don't use previous context
+            temperature=0.0,  # More deterministic output
+            compression_ratio_threshold=2.4,  # Detect repetitive content
+            logprob_threshold=-1.0,  # Confidence threshold
+            no_speech_threshold=0.6,  # Higher threshold for no speech detection
         )
+        
         text = res.get("text", "").strip()
-        if not text:
-            logging.warning("Whisper returned empty transcript")
-            # Log some additional info about the result
-            logging.info(f"Full whisper result: {res}")
+        
+        # Calculate average confidence from word-level data if available
+        confidence = 0.0
+        if "segments" in res and res["segments"]:
+            total_logprob = 0.0
+            total_words = 0
+            for segment in res["segments"]:
+                if "words" in segment:
+                    for word in segment["words"]:
+                        if "probability" in word:
+                            total_logprob += word["probability"]
+                            total_words += 1
+            if total_words > 0:
+                confidence = total_logprob / total_words
+        
+        # Additional quality checks for noisy environments
+        if text:
+            # Check for repetitive patterns (common in noise)
+            words = text.lower().split()
+            if len(words) > 2:
+                # Check for excessive repetition
+                unique_words = len(set(words))
+                repetition_ratio = unique_words / len(words)
+                if repetition_ratio < 0.3:  # Too much repetition
+                    logging.warning(f"High repetition detected: {repetition_ratio:.2f}")
+                    return ""
+            
+            # Check for minimum meaningful length
+            if len(words) < 2 and len(text) < 5:
+                logging.warning(f"Transcript too short to be meaningful: '{text}'")
+                return ""
+            
+            logging.info(f"Whisper succeeded: '{text}' (confidence: {confidence:.3f})")
         else:
-            logging.info(f"Whisper succeeded: {text[:50]}...")
+            logging.warning("Whisper returned empty transcript")
+            logging.info(f"Full whisper result: {res}")
+            
         return text
     except Exception as e:
         logging.exception("whisper.transcribe failed")
