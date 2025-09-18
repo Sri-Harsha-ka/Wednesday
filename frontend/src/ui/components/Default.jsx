@@ -9,14 +9,30 @@ const Default = () => {
 
     useEffect(() => {
         const canvas = canvasRef.current;
-        if (!canvas) return;
+        if (!canvas) {
+            console.error('Canvas ref is null!');
+            return;
+        }
 
         const ctx = canvas.getContext('2d');
+        if (!ctx) {
+            console.error('Could not get 2D context!');
+            return;
+        }
         
         // Set canvas size
         const resizeCanvas = () => {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
+            const container = canvas.parentElement;
+            if (container) {
+                canvas.width = container.clientWidth;
+                canvas.height = container.clientHeight;
+                console.log(`Canvas resized to: ${canvas.width}x${canvas.height}`);
+            } else {
+                // Fallback to window size
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                console.log(`Canvas resized to window size: ${canvas.width}x${canvas.height}`);
+            }
         };
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
@@ -135,6 +151,7 @@ const Default = () => {
             for (let i = 0; i < 80; i++) {
                 particlesRef.current.push(new Particle());
             }
+
         };
 
         // Draw connections
@@ -261,8 +278,12 @@ const Default = () => {
         // Initialize mouse position
         mouseRef.current = { x: -1000, y: -1000 };
 
-        initParticles();
-        animate();
+        // Add a small delay to ensure DOM is fully rendered
+        setTimeout(() => {
+            resizeCanvas(); // Resize again after DOM is ready
+            initParticles();
+            animate();
+        }, 100);
 
         return () => {
             // Clean up all event listeners and animations
@@ -343,7 +364,7 @@ const Default = () => {
     const randomResponse = responses[Math.floor(Math.random() * responses.length)];
 
     return (
-        <div className="relative min-h-screen w-full bg-black overflow-hidden">
+        <div className="relative h-full w-full bg-black overflow-hidden">
             {/* Canvas Particles Background */}
             <canvas
                 ref={canvasRef}
@@ -351,7 +372,7 @@ const Default = () => {
                 style={{ background: '#000000' }}
             />
 
-            <div className="relative z-10 flex items-center justify-center min-h-screen text-2xl font-semibold">
+            <div className="relative z-10 flex items-center justify-center h-full text-2xl font-semibold">
                 <div className="text-center">
                     <p className='text-4xl text-white mb-4'>{randomGreeting}</p>
                     <div className='pt-6'>

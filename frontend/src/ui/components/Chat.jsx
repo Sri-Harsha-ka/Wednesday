@@ -6,21 +6,52 @@ const Chat = () => {
         { from: "bot", text: "Hello! How can I help you today?" },
     ]);
     const [input, setInput] = useState("");
+    const [isLoading, setIsLoading] = useState(false);
 
-    const handleSend = () => {
-        if (!input.trim()) return;
+    const handleSend = async () => {
+        if (!input.trim() || isLoading) return;
 
+        const userMessage = input.trim();
         // Add user message
-        setMessages([...messages, { from: "user", text: input }]);
+        setMessages(prev => [...prev, { from: "user", text: userMessage }]);
         setInput("");
+        setIsLoading(true);
 
-        // Fake bot response (for now)
-        setTimeout(() => {
-            setMessages((prev) => [
+        try {
+            // Call the backend API for Gemini AI response
+            const response = await fetch('http://localhost:5000/ask', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ message: userMessage }),
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.response) {
+                // Add AI response
+                setMessages(prev => [
+                    ...prev,
+                    { from: "bot", text: data.response },
+                ]);
+            } else {
+                // Handle API errors
+                const errorMessage = data.details || data.error || 'Sorry, I encountered an error. Please try again.';
+                setMessages(prev => [
+                    ...prev,
+                    { from: "bot", text: errorMessage },
+                ]);
+            }
+        } catch (error) {
+            console.error('Chat API error:', error);
+            setMessages(prev => [
                 ...prev,
-                { from: "bot", text: "Got it 👍 (this is a sample response)" },
+                { from: "bot", text: "Sorry, I'm having trouble connecting. Please check if the server is running and try again." },
             ]);
-        }, 800);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     return (
@@ -43,6 +74,22 @@ const Chat = () => {
                         </div>
                     </div>
                 ))}
+                
+                {/* Typing indicator when AI is responding */}
+                {isLoading && (
+                    <div className="flex justify-start animate-fadeIn">
+                        <div className="px-5 py-3 rounded-2xl bg-white text-gray-800 border border-gray-100 mr-4 shadow-md">
+                            <div className="flex items-center space-x-1">
+                                <div className="flex space-x-1">
+                                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+                                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                                </div>
+                                <span className="text-sm text-gray-500 ml-2">AI is thinking...</span>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Input bar - Fixed at bottom */}
@@ -57,25 +104,30 @@ const Chat = () => {
                             type="text"
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                            placeholder="Type your message..."
+                            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+                            placeholder={isLoading ? "AI is thinking..." : "Type your message..."}
+                            disabled={isLoading}
                             className="w-full border border-gray-300 rounded-full px-6 py-3 
                                      focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent
                                      shadow-sm transition-all duration-200 text-sm md:text-base
-                                     placeholder-gray-500 bg-white"
+                                     placeholder-gray-500 bg-white disabled:bg-gray-50 disabled:cursor-not-allowed"
                         />
                     </div>
 
                     <button
                         onClick={handleSend}
-                        disabled={!input.trim()}
+                        disabled={!input.trim() || isLoading}
                         className="p-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 
                                  hover:from-blue-600 hover:to-indigo-700 text-white shadow-md
                                  transition-all duration-200 hover:shadow-lg disabled:opacity-50 
                                  disabled:cursor-not-allowed disabled:hover:shadow-md
                                  transform hover:scale-105 active:scale-95 flex-shrink-0"
                     >
-                        <Send className="w-5 h-5" />
+                        {isLoading ? (
+                            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        ) : (
+                            <Send className="w-5 h-5" />
+                        )}
                     </button>
                 </div>
             </div>
