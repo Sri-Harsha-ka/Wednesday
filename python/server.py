@@ -124,7 +124,7 @@ MODEL_NAME = os.environ.get("WHISPER_MODEL", "tiny")
 
 # Gemini API config
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 def ask_gemini(question: str) -> str:
     """Send a prompt to Gemini and return the response text."""
@@ -328,6 +328,37 @@ def transcribe():
                 os.unlink(wav_path)
         except Exception:
             logging.exception("failed to delete tmp/wav file")
+
+
+@app.route("/ask", methods=["POST"])
+def ask():
+    """Handle chat messages and return Gemini AI responses."""
+    logging.info("Received /ask request")
+    try:
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({"error": "Missing 'message' field"}), 400
+        
+        message = data['message'].strip()
+        if not message:
+            return jsonify({"error": "Empty message"}), 400
+        
+        logging.info(f"Processing chat message: {message}")
+        
+        # Get AI response using existing Gemini function
+        response = ask_gemini(message)
+        
+        if response.startswith('[Gemini'):
+            # Gemini API error or not configured
+            logging.warning(f"Gemini unavailable: {response}")
+            return jsonify({"error": "AI service unavailable", "details": response}), 503
+        
+        logging.info(f"Gemini response: {response}")
+        return jsonify({"response": response}), 200
+        
+    except Exception as e:
+        logging.exception("Error in ask handler")
+        return jsonify({"error": str(e)}), 500
 
 
 def parse_command(text):

@@ -5,14 +5,14 @@ import Topbar from '../components/TopBar';
 
 const AppPage = () => {
     return (
-        <div className="flex h-screen">
+        <div className="flex h-screen overflow-hidden">
             {/* Sidebar */}
             <Nav />
 
             {/* Main content */}
-            <main className="flex-1 pb-6 bg-gray-100 overflow-y-auto">
+            <main className="flex-1 flex flex-col bg-gray-100">
                 <Topbar />
-                <div>
+                <div className="flex-1 overflow-hidden">
                     <Outlet />
                 </div>
             </main>
