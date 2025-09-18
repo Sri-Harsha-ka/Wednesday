@@ -1,8 +1,11 @@
+torch
 flask
 flask-cors
+faster-whisper
+pyautogui
+openai-whisper
 requests
 whisper
-faster-whisper
 sentencepiece
-torch
-pyautogui
+speechrecognition
+pyaudio

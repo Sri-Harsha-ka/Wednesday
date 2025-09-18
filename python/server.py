@@ -1,3 +1,62 @@
+
+from flask import Flask, request, jsonify
+import subprocess
+import os
+
+app = Flask(__name__)
+
+APP_COMMANDS = {
+    # System utilities (these usually work as-is)
+    "notepad": "notepad.exe",
+    "calculator": "calc.exe",
+    "calc": "calc.exe",
+    "paint": "mspaint.exe",
+    "command prompt": "cmd.exe",
+    "cmd": "cmd.exe",
+    "explorer": "explorer.exe",
+    "file": "explorer.exe",
+    "files": "explorer.exe",
+    "file explorer": "explorer.exe",
+    "snipping tool": "SnippingTool.exe",
+    "task manager": "taskmgr.exe",
+
+    # Browsers - using shell commands for better compatibility
+    "chrome": "chrome",
+    "google chrome": "chrome", 
+    "brave": "brave",
+    "edge": "msedge",
+    "microsoft edge": "msedge",
+    "firefox": "firefox",
+    "browser": "msedge",  # Default browser
+
+    # Editors
+    "vs code": "code",
+    "visual studio code": "code",
+    "code": "code",
+    "sublime text": r"C:\\Program Files\\Sublime Text\\sublime_text.exe",
+    "notepad++": r"C:\\Program Files\\Notepad++\\notepad++.exe",
+
+    # Microsoft Office (using shell commands for better compatibility)
+    "word": "winword",
+    "microsoft word": "winword", 
+    "excel": "excel",
+    "microsoft excel": "excel",
+    "powerpoint": "powerpnt",
+    "microsoft powerpoint": "powerpnt",
+
+    # Media
+    "vlc": r"C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+    "windows media player": r"C:\\Program Files\\Windows Media Player\\wmplayer.exe",
+    "spotify": r"C:\\Users\\vinee\\AppData\\Roaming\\Spotify\\Spotify.exe",
+}
+
+
+# Removed redundant /open_app route - all app launching now handled by /api/execute
+
+# ...existing code...
+import warnings
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
@@ -33,7 +92,8 @@ CORS(app)
 # Configuration
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "tiny")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama2")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3:latest")
+
 
 # Device / executor setup for faster transcription
 try:
@@ -52,6 +112,60 @@ except Exception:
     logging.exception("Failed to load model with device hint; falling back to default load")
     model = whisper.load_model(MODEL_NAME)
 
+# --- Helper: Convert webm to wav for Whisper compatibility ---
+def convert_webm_to_wav(webm_path):
+    """Convert a .webm file to .wav using ffmpeg. Returns wav path or None on failure."""
+    wav_path = webm_path.replace('.webm', '.wav')
+    cmd = [
+        'ffmpeg', '-y', '-i', webm_path,
+        '-ar', '16000', '-ac', '1', 
+        '-acodec', 'pcm_s16le',  # Ensure PCM encoding
+        '-f', 'wav',  # Force WAV format
+        wav_path
+    ]
+    try:
+        logging.info(f"Converting {webm_path} to {wav_path} using ffmpeg")
+        result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        # Log ffmpeg output for debugging
+        if result.stderr:
+            logging.debug(f"ffmpeg stderr: {result.stderr}")
+        
+        # Verify the output file was created and has content
+        if os.path.exists(wav_path) and os.path.getsize(wav_path) > 44:  # WAV header is 44 bytes
+            logging.info(f"Successfully converted to {wav_path} (size: {os.path.getsize(wav_path)} bytes)")
+            return wav_path
+        else:
+            logging.error(f"ffmpeg produced empty or missing output file: {wav_path}")
+            return None
+    except subprocess.CalledProcessError as e:
+        logging.error(f"ffmpeg conversion failed with return code {e.returncode}")
+        logging.error(f"ffmpeg stderr: {e.stderr}")
+        return None
+    except Exception as e:
+        logging.error(f"ffmpeg conversion failed: {e}")
+        return None
+
+def validate_audio_file(file_path):
+    """Validate that the audio file exists and has reasonable content."""
+    if not os.path.exists(file_path):
+        return False, "File does not exist"
+    
+    file_size = os.path.getsize(file_path)
+    if file_size < 100:  # Less than 100 bytes is likely empty
+        return False, f"File too small ({file_size} bytes)"
+    
+    # Try to read the first few bytes to ensure it's not corrupted
+    try:
+        with open(file_path, 'rb') as f:
+            header = f.read(16)
+            if len(header) < 16:
+                return False, "File header too short"
+    except Exception as e:
+        return False, f"Cannot read file: {e}"
+    
+    return True, "Valid"
+
 # faster-whisper: lazy-loaded model holder
 _fw_model = None
 FAST_WHISPER_MODEL = os.environ.get("FAST_WHISPER_MODEL", f"openai/whisper-{MODEL_NAME}")
@@ -69,18 +183,32 @@ def get_faster_whisper_model():
     if fw_device == "cuda":
         compute_type = "float16"
     else:
-        # try an int8 quantized compute type for CPU; fallback to float32 if it errors
-        compute_type = os.environ.get("FAST_WHISPER_COMPUTE", "int8_float16")
+        # Use float32 for CPU as int8_float16 often causes issues
+        compute_type = os.environ.get("FAST_WHISPER_COMPUTE", "float32")
 
     logging.info(f"Loading faster-whisper model {FAST_WHISPER_MODEL} on {fw_device} compute_type={compute_type}")
     try:
+        # Try to clear any cached model that might be corrupted
+        import shutil
+        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        model_cache_path = os.path.join(cache_dir, f"models--openai--whisper-{MODEL_NAME}")
+        
         _fw_model = WhisperModel(FAST_WHISPER_MODEL, device=fw_device, compute_type=compute_type)
-    except Exception:
+        logging.info("Successfully loaded faster-whisper model")
+    except Exception as e:
         logging.exception("Failed to load faster-whisper with requested compute_type; retrying with float32")
         try:
             _fw_model = WhisperModel(FAST_WHISPER_MODEL, device=fw_device, compute_type="float32")
-        except Exception:
+            logging.info("Successfully loaded faster-whisper model with float32")
+        except Exception as e2:
             logging.exception("faster-whisper model failed to load; disabling faster-whisper")
+            # Clear corrupted cache if it exists
+            try:
+                if os.path.exists(model_cache_path):
+                    logging.info(f"Clearing potentially corrupted cache at {model_cache_path}")
+                    shutil.rmtree(model_cache_path)
+            except Exception:
+                pass
             _fw_model = None
     return _fw_model
 
@@ -105,21 +233,53 @@ def transcribe_with_faster_whisper(audio_path: str, beam_size: int = 1) -> str:
 
 def transcribe_audio(audio_path: str) -> str:
     """Generic transcription wrapper: prefer faster-whisper, fall back to whisper."""
+    # Validate audio file first
+    is_valid, msg = validate_audio_file(audio_path)
+    if not is_valid:
+        logging.error(f"Audio validation failed: {msg}")
+        return ""
+    
+    logging.info(f"Attempting transcription of {audio_path} (size: {os.path.getsize(audio_path)} bytes)")
+    
     # Try faster-whisper first
     if HAVE_FAST_WHISPER:
         try:
             # beam_size=1 for low-latency; adjust via env var
             beam = int(os.environ.get("FAST_WHISPER_BEAM", "1"))
-            return transcribe_with_faster_whisper(audio_path, beam_size=beam)
+            logging.info("Attempting faster-whisper transcription")
+            result = transcribe_with_faster_whisper(audio_path, beam_size=beam)
+            if result and result.strip():
+                logging.info(f"faster-whisper succeeded: {result[:50]}...")
+                return result
+            else:
+                logging.warning("faster-whisper returned empty result")
         except Exception:
             logging.exception("faster-whisper transcription failed; falling back to whisper")
 
     # Fallback: use the whisper package already loaded as `model`
     try:
-        res = model.transcribe(audio_path)
-        return res.get("text", "").strip()
-    except Exception:
+        logging.info("Attempting regular whisper transcription")
+        # Add some whisper options that might help with audio quality
+        res = model.transcribe(
+            audio_path,
+            language=None,  # Auto-detect language
+            task="transcribe",
+            verbose=False,
+            word_timestamps=False
+        )
+        text = res.get("text", "").strip()
+        if not text:
+            logging.warning("Whisper returned empty transcript")
+            # Log some additional info about the result
+            logging.info(f"Full whisper result: {res}")
+        else:
+            logging.info(f"Whisper succeeded: {text[:50]}...")
+        return text
+    except Exception as e:
         logging.exception("whisper.transcribe failed")
+        # Check if it's the tensor reshape error specifically
+        if "cannot reshape tensor" in str(e) or "0 elements" in str(e):
+            logging.error("Tensor reshape error - likely empty or corrupted audio")
         return ""
 
 
@@ -141,6 +301,9 @@ def ask_ollama(question: str) -> str:
 
     try:
         res = requests.post(url, json=payload, timeout=60)
+        if res.status_code == 404:
+            logging.error("Ollama API returned 404 Not Found. Ollama server may not be running or the endpoint is incorrect.")
+            return "[Ollama not available: 404 Not Found]"
         res.raise_for_status()
 
         # First try: parse as JSON (most common)
@@ -248,115 +411,27 @@ def ask_ollama(question: str) -> str:
 
     except Exception as e:
         logging.exception("Ollama request failed")
-        return f"Ollama error: {e}"
+        return "[Ollama error: {}]".format(e)
 
 
-# ------------------ Voice command helpers (from server_voice.py) ------------------
-APP_MAP = {
-    "Windows": {
-        "chrome": r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "notepad": "notepad.exe",
-        "calculator": "calc.exe",
-    },
-    "Darwin": {
-        "chrome": "Google Chrome",
-        "vscode": "Visual Studio Code",
-    },
-    "Linux": {
-        "chrome": "google-chrome",
-        "vscode": "code",
-    },
-}
 
-
-def system_name():
-    return platform.system()
-
-
-def open_url(url: str):
-    if not re.match(r"https?://", url):
-        url = "https://" + url
-    webbrowser.open(url)
-    return True, f"Opened {url}"
-
-
-def open_application(name: str):
-    sysname = system_name()
-    mapping = APP_MAP.get(sysname, {})
-    name = name.strip().lower()
-
-    if name in mapping:
-        path = os.path.expandvars(mapping[name])
-        try:
-            subprocess.Popen([path])
-            return True, f"Opening {name}"
-        except Exception as e:
-            return False, str(e)
-
-    return False, f"App {name} not found"
-
-
-def take_screenshot():
-    if pyautogui is None:
-        return False, "Screenshot feature not available"
-    try:
-        img = pyautogui.screenshot()
-        fname = f"screenshot_{int(time.time())}.png"
-        img.save(fname)
-        return True, f"Screenshot saved to {fname}"
-    except Exception as e:
-        return False, str(e)
-
-
-def parse_and_execute(text: str):
-    text = (text or "").lower().strip()
-
-    if "screenshot" in text:
-        return take_screenshot()
-
-    if text.startswith("open "):
-        target = text.replace("open ", "").strip()
-
-        # Websites
-        if "youtube" in target:
-            return open_url("https://youtube.com")
-        if "google" in target:
-            return open_url("https://google.com")
-
-        # Direct URL
-        if "." in target:
-            return open_url(target)
-
-        # Apps
-        return open_application(target)
-
-    return False, "Command not recognized"
-
-# Flask endpoint for voice command execution (merged from server_voice.py)
-@app.route("/api/execute", methods=["POST"])
-def execute_command():
-    try:
-        data = request.get_json(force=False, silent=True) or {}
-        text = data.get("text") or data.get("command") or ""
-        ok, msg = parse_and_execute(text)
-        return jsonify({"ok": ok, "message": msg})
-    except Exception as e:
-        logging.exception("execute_command error")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-# ------------------ End voice helpers ------------------
 
 
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
+    logging.info("=" * 60)
     logging.info("Received /transcribe request")
     logging.info(f"Headers: {dict(request.headers)}")
     logging.info(f"Content-Length: {request.content_length}")
+    logging.info(f"Content-Type: {request.content_type}")
+    logging.info(f"Method: {request.method}")
+    logging.info(f"Remote address: {request.remote_addr}")
 
     tmp_path = None
     try:
         if "file" in request.files:
             f = request.files["file"]
+            logging.info(f"File field found: filename={f.filename}, content_type={f.content_type}")
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".webm")
             tmp_path = tmp.name
             f.save(tmp_path)
@@ -364,9 +439,14 @@ def transcribe():
             logging.info(f"Saved uploaded file from form to {tmp_path}")
         else:
             body = request.get_data()
+            logging.info(f"No file field, reading raw body. Body length: {len(body) if body else 0}")
             if not body or len(body) == 0:
                 logging.warning("No file field and empty body")
                 return jsonify({"error": "no file provided"}), 400
+            
+            # Log first few bytes to see what we're getting
+            logging.info(f"First 50 bytes of body: {body[:50]}")
+            
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".webm")
             tmp_path = tmp.name
             with open(tmp_path, "wb") as wf:
@@ -375,30 +455,53 @@ def transcribe():
 
         size = os.path.getsize(tmp_path)
         logging.info(f"Uploaded file size: {size} bytes")
+        
+        # Try to identify the file type
+        with open(tmp_path, 'rb') as f:
+            header = f.read(16)
+            logging.info(f"File header (hex): {header.hex()}")
+            logging.info(f"File header (first 16 bytes): {header}")
         # lower threshold to allow short recordings; still reject obviously empty files
-        if size < 50:
+        if size < 100:
             logging.warning("Uploaded file too small to contain speech")
             return jsonify({"error": "uploaded file is too small or empty"}), 400
+
+        # Validate the uploaded file
+        is_valid, validation_msg = validate_audio_file(tmp_path)
+        if not is_valid:
+            logging.error(f"Audio file validation failed: {validation_msg}")
+            return jsonify({"error": f"invalid audio file: {validation_msg}"}), 400
+
         logging.info("Starting transcription (faster-whisper preferred)")
-        transcript = transcribe_audio(tmp_path)
-        logging.info(f"Transcript: {transcript!r}")
+        
+        # --- Convert webm to wav for Whisper compatibility ---
+        logging.info("Attempting audio conversion with ffmpeg...")
+        wav_path = convert_webm_to_wav(tmp_path)
+        if wav_path and os.path.exists(wav_path):
+            wav_size = os.path.getsize(wav_path)
+            logging.info(f"Successfully converted {tmp_path} to {wav_path} (size: {wav_size} bytes)")
+            transcript = transcribe_audio(wav_path)
+        else:
+            logging.warning("ffmpeg conversion failed or wav not found; using original file")
+            transcript = transcribe_audio(tmp_path)
+        
+        logging.info(f"Final transcript result: '{transcript}' (length: {len(transcript) if transcript else 0})")
 
-        if not transcript:
-            return jsonify({"error": "no speech detected"}), 400
+        if not transcript or transcript.strip() == "":
+            logging.error("TRANSCRIPTION FAILED: Empty transcript returned")
+            logging.error(f"Original file: {tmp_path} ({size} bytes)")
+            if wav_path:
+                wav_size = os.path.getsize(wav_path) if os.path.exists(wav_path) else 0
+                logging.error(f"Converted file: {wav_path} ({wav_size} bytes)")
+            return jsonify({"error": "no speech detected", "details": "The audio file may be too quiet, too short, or contain no clear speech"}), 400
 
-        # Check if transcript looks like a local command (e.g., "open youtube")
-        try:
-            cmd_ok, cmd_msg = parse_and_execute(transcript)
-        except Exception:
-            cmd_ok, cmd_msg = False, "Command parsing failed"
-
-        # If parse_and_execute recognized the command, return its result immediately
-        if cmd_ok or (isinstance(cmd_msg, str) and cmd_msg != "Command not recognized"):
-            logging.info(f"Executed command from transcript: ok={cmd_ok} msg={cmd_msg}")
-            return jsonify({"text": str(cmd_msg), "question": transcript, "command_executed": True}), 200
-
-        # Otherwise fall back to LLM processing
+        # If you want to support direct app opening from transcript, call /open_app from frontend after transcription.
+        # Otherwise, just return the transcript and let the frontend handle app opening.
         answer = ask_ollama(transcript)
+        # If Ollama is not available, return a clean message only
+        if answer.startswith('[Ollama not available:') or answer.startswith('[Ollama error:'):
+            logging.info(f"Ollama unavailable: {answer}")
+            return jsonify({"text": answer, "question": transcript}), 200
         logging.info(f"Ollama answer: {answer!r}")
         return jsonify({"text": answer, "question": transcript}), 200
     except Exception as exc:
@@ -408,9 +511,202 @@ def transcribe():
         try:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+            # Clean up wav file if created
+            wav_path = tmp_path.replace('.webm', '.wav')
+            if os.path.exists(wav_path):
+                os.unlink(wav_path)
         except Exception:
-            logging.exception("failed to delete tmp file")
+            logging.exception("failed to delete tmp/wav file")
 
+
+def parse_command(text):
+    """Enhanced command parsing with natural language understanding."""
+    text = text.lower().strip()
+    
+    # Handle websites first
+    website_patterns = {
+        r'(open|go to|visit)\s*(youtube|you\s*tube)': 'https://youtube.com',
+        r'(open|go to|visit)\s*google': 'https://google.com',
+        r'(open|go to|visit)\s*(facebook|fb)': 'https://facebook.com',
+        r'(open|go to|visit)\s*twitter': 'https://twitter.com',
+        r'(open|go to|visit)\s*instagram': 'https://instagram.com',
+        r'(open|go to|visit)\s*github': 'https://github.com',
+        r'(open|go to|visit)\s*stackoverflow': 'https://stackoverflow.com',
+    }
+    
+    for pattern, url in website_patterns.items():
+        if re.search(pattern, text):
+            return {"type": "website", "url": url, "name": pattern.split('\\s*')[-1].replace(')', '')}
+    
+    # Handle app opening commands
+    app_patterns = {
+        r'(open|start|launch)\s+(notepad|text\s*editor)': 'notepad',
+        r'(open|start|launch)\s+(calculator|calc)': 'calculator',
+        r'(open|start|launch)\s+(chrome|google\s*chrome)': 'chrome',
+        r'(open|start|launch)\s+(brave|brave\s*browser)': 'brave',
+        r'(open|start|launch)\s+(edge|microsoft\s*edge)': 'edge',
+        r'(open|start|launch)\s+(firefox|mozilla)': 'firefox',
+        r'(open|start|launch)\s+(vs\s*code|visual\s*studio\s*code|code)': 'vs code',
+        r'(open|start|launch)\s+(word|microsoft\s*word)': 'word',
+        r'(open|start|launch)\s+(excel|microsoft\s*excel)': 'excel',
+        r'(open|start|launch)\s+(powerpoint|microsoft\s*powerpoint|power\s*point)': 'powerpoint',
+        r'(open|start|launch)\s+(explorer|file\s*explorer|files?)': 'explorer',
+        r'(open|start|launch)\s+(paint|ms\s*paint)': 'paint',
+        r'(open|start|launch)\s+(browser|web\s*browser)': 'edge',
+    }
+    
+    for pattern, app in app_patterns.items():
+        if re.search(pattern, text):
+            return {"type": "app", "app": app}
+    
+    # Fallback: try to extract app name after common trigger words
+    open_match = re.search(r'(open|start|launch)\s+(.+)', text)
+    if open_match:
+        app_name = open_match.group(2).strip()
+        # Clean up common suffixes
+        app_name = re.sub(r'\s+(app|application|program)$', '', app_name)
+        return {"type": "app", "app": app_name}
+    
+    return {"type": "unknown", "text": text}
+
+
+@app.route("/api/execute", methods=["POST"])
+def execute_command():
+    """Execute commands based on recognized text with enhanced natural language processing."""
+    logging.info("Received /api/execute request")
+    try:
+        data = request.get_json()
+        if not data or 'text' not in data:
+            return jsonify({"status": "error", "message": "Missing 'text' field"}), 400
+        
+        text = data['text'].strip()
+        logging.info(f"Executing command: {text}")
+        
+        # Parse the command using enhanced parsing
+        parsed = parse_command(text)
+        logging.info(f"Parsed command: {parsed}")
+        
+        if parsed["type"] == "website":
+            try:
+                import webbrowser
+                webbrowser.open(parsed["url"])
+                return jsonify({"status": "success", "message": f"Opened {parsed['name']}", "ok": True})
+            except Exception as e:
+                return jsonify({"status": "error", "message": f"Failed to open {parsed['name']}: {e}"}), 500
+        
+        elif parsed["type"] == "app":
+            try:
+                result = execute_app_command(parsed["app"])
+                if result.get("status") == "success":
+                    return jsonify({"status": "success", "message": result.get("message", "App opened"), "ok": True})
+                else:
+                    return jsonify({"status": "error", "message": result.get("message", "Failed to open app")}), 404
+            except Exception as e:
+                return jsonify({"status": "error", "message": f"Failed to open {parsed['app']}: {e}"}), 500
+        
+        else:
+            # If no specific command matched, return info but don't treat as error
+            return jsonify({"status": "info", "message": f"Command '{text}' not recognized as an app or website command", "ok": False})
+        
+    except Exception as e:
+        logging.exception("Error in execute_command")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def execute_app_command(app_name):
+    """Enhanced app launching function with multiple fallback methods."""
+    app_name = app_name.lower().strip()
+    logging.info(f"Attempting to open app: {app_name}")
+    
+    # Try direct command mapping first
+    command = APP_COMMANDS.get(app_name)
+    if command:
+        try:
+            if command.endswith('.exe'):
+                logging.info(f"Using os.startfile for: {command}")
+                os.startfile(command)
+            else:
+                logging.info(f"Using shell command: {command}")
+                subprocess.Popen(["start", command], shell=True)
+            return {"status": "success", "message": f"Opened {app_name}"}
+        except Exception as e:
+            logging.warning(f"Direct command failed for {app_name}: {e}")
+            # Continue to fallback methods
+    
+    # Fallback method: try common app variations
+    fallback_attempts = []
+    
+    if "notepad" in app_name:
+        fallback_attempts.append(("notepad.exe", "notepad"))
+    elif "calculator" in app_name or "calc" in app_name:
+        fallback_attempts.append(("calc.exe", "calculator"))
+    elif "chrome" in app_name:
+        fallback_attempts.extend([
+            ("start chrome", "Google Chrome"),
+            ("start chrome.exe", "Google Chrome")
+        ])
+    elif "brave" in app_name:
+        fallback_attempts.append(("start brave", "Brave Browser"))
+    elif "edge" in app_name:
+        fallback_attempts.extend([
+            ("start msedge", "Microsoft Edge"),
+            ("start edge", "Microsoft Edge")
+        ])
+    elif "firefox" in app_name:
+        fallback_attempts.append(("start firefox", "Firefox"))
+    elif "explorer" in app_name or "file" in app_name:
+        fallback_attempts.append(("explorer.exe", "File Explorer"))
+    elif "paint" in app_name:
+        fallback_attempts.append(("mspaint.exe", "Paint"))
+    elif "word" in app_name:
+        fallback_attempts.extend([
+            ("start winword", "Microsoft Word"),
+            ("start word", "Microsoft Word")
+        ])
+    elif "excel" in app_name:
+        fallback_attempts.extend([
+            ("start excel", "Microsoft Excel"),
+            ("start xlsx", "Microsoft Excel")
+        ])
+    elif "powerpoint" in app_name:
+        fallback_attempts.extend([
+            ("start powerpnt", "Microsoft PowerPoint"),
+            ("start powerpoint", "Microsoft PowerPoint")
+        ])
+    elif "vs code" in app_name or "visual studio code" in app_name or app_name == "code":
+        fallback_attempts.extend([
+            ("code", "VS Code"),
+            ("start code", "VS Code")
+        ])
+    
+    # Try fallback methods
+    for command, display_name in fallback_attempts:
+        try:
+            logging.info(f"Trying fallback command: {command}")
+            if command.startswith("start "):
+                subprocess.Popen(command.split(), shell=True)
+            else:
+                subprocess.Popen(command, shell=True)
+            return {"status": "success", "message": f"Opened {display_name}"}
+        except Exception as e:
+            logging.warning(f"Fallback command failed: {command} - {e}")
+            continue
+    
+    # If all else fails, try a generic start command
+    try:
+        logging.info(f"Trying generic start command for: {app_name}")
+        subprocess.Popen(["start", app_name], shell=True)
+        return {"status": "success", "message": f"Attempted to open {app_name}"}
+    except Exception as e:
+        logging.error(f"All methods failed for {app_name}: {e}")
+        return {"status": "error", "message": f"Could not open {app_name}. App may not be installed or accessible."}
+
+
+# 404 error handler must be after app is defined and all routes
+@app.errorhandler(404)
+def handle_404(e):
+    logging.error(f"404 Not Found: {request.path} method={request.method} data={request.get_data(as_text=True)}")
+    return jsonify({"status": "error", "message": f"Not found: {request.path}"}), 404
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -54,22 +54,39 @@ async function callASR(buffer) {
 
   if (!res.ok) {
     const txt = await res.text();
+    console.error(`ASR server error: ${res.status} - ${txt}`);
     throw new Error(`ASR server error: ${res.status} ${txt}`);
   }
-  return res.json();
+  
+  const result = await res.json();
+  console.log("ASR result:", result);
+  return result;
 }
 
 ipcMain.handle("stt:recognize", async (event, arrayLike) => {
   try {
+    console.log("IPC: Received transcription request");
     const uint8 = Uint8Array.from(arrayLike || []);
     const buffer = Buffer.from(uint8);
-    if (!buffer || buffer.length === 0) return { error: "empty buffer from renderer" };
+    if (!buffer || buffer.length === 0) {
+      console.error("IPC: Empty buffer received");
+      return { error: "empty buffer from renderer" };
+    }
 
+    console.log("IPC: Calling ASR with buffer size:", buffer.length);
     const json = await callASR(buffer);
-    if (json && json.error) return { error: json.error };
+    console.log("IPC: ASR response:", json);
+    
+    if (json && json.error) {
+      console.error("IPC: ASR returned error:", json.error);
+      return { error: json.error };
+    }
 
-    return { text: json.text || "", question: json.question || "" };
+    const result = { text: json.text || "", question: json.question || "" };
+    console.log("IPC: Returning result:", result);
+    return result;
   } catch (err) {
+    console.error("IPC: Error in transcription:", err);
     return { error: String(err) };
   }
 });
